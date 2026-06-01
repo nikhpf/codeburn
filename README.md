@@ -5,10 +5,9 @@
 <p align="center"><strong>See where your AI coding tokens go.</strong></p>
 
 <p align="center">                                                                                                                                                                          
-    <a href="https://www.npmjs.com/package/codeburn"><img src="https://img.shields.io/npm/v/codeburn.svg" alt="npm version" /></a>
-    <a href="https://www.npmjs.com/package/codeburn"><img src="https://img.shields.io/npm/dt/codeburn.svg" alt="total downloads" /></a>                                                       
-    <a href="https://github.com/getagentseal/codeburn/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/codeburn.svg" alt="license" /></a>                                            
-    <a href="https://github.com/getagentseal/codeburn"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="node version" /></a>                                       
+    <a href="https://github.com/nikhpf/codeburn/pkgs/npm/codeburn"><img src="https://img.shields.io/badge/GitHub%20Packages-%40nikhpf%2Fcodeburn-2188ff?logo=github" alt="GitHub Packages" /></a>
+    <a href="https://github.com/nikhpf/codeburn/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license" /></a>                                            
+    <a href="https://github.com/nikhpf/codeburn"><img src="https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg" alt="node version" /></a>                                       
     <a href="https://discord.gg/w2sw8mCqep"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>                                     
     <a href="https://github.com/sponsors/iamtoruk"><img src="https://img.shields.io/badge/sponsor-♥-ea4aaa?logo=github" alt="Sponsor" /></a>                                                  
   </p> 
@@ -44,23 +43,35 @@ Everything runs locally. No wrapper, no proxy, no API keys. CodeBurn reads sessi
 
 ## Install
 
+> This is the **token-first fork**, published to GitHub Packages as
+> `@nikhpf/codeburn` (not the npmjs `codeburn` package). The command is still
+> `codeburn` — only the install name is scoped.
+
+GitHub Packages requires authentication even for reads, so set this up once:
+
+1. Create a GitHub personal access token (classic) with the **`read:packages`**
+   scope: <https://github.com/settings/tokens>.
+2. Add these lines to your `~/.npmrc` (the token is yours — never commit it):
+
+   ```ini
+   @nikhpf:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PAT
+   ```
+
+Then install globally:
+
 ```bash
-npm install -g codeburn
+npm install -g @nikhpf/codeburn
 ```
 
-Or with Homebrew:
+Or run directly without installing (same `~/.npmrc` setup required):
 
 ```bash
-brew install codeburn
+npx @nikhpf/codeburn
 ```
 
-Or run directly without installing:
-
-```bash
-npx codeburn
-bunx codeburn
-dx codeburn
-```
+The dashboard is **token-first by default**; pass `--cost` to see US dollar
+amounts instead (`codeburn --cost`).
 
 ## Usage
 

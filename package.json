@@ -1,7 +1,7 @@
 {
-  "name": "codeburn",
+  "name": "@nikhpf/codeburn",
   "version": "0.9.11",
-  "description": "See where your AI coding tokens go - by task, tool, model, and project",
+  "description": "See where your AI coding tokens go - by task, tool, model, and project (token-first fork)",
   "type": "module",
   "main": "./dist/cli.js",
   "bin": {
@@ -10,6 +10,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "bundle-litellm": "node scripts/bundle-litellm.mjs",
     "build": "node scripts/bundle-litellm.mjs && tsup && node -e \"const fs=require('fs'); fs.copyFileSync('src/cli.ts','dist/cli.js'); fs.chmodSync('dist/cli.js',0o755)\"",
@@ -39,12 +42,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/getagentseal/codeburn.git"
+    "url": "git+https://github.com/nikhpf/codeburn.git"
   },
   "bugs": {
-    "url": "https://github.com/getagentseal/codeburn/issues"
+    "url": "https://github.com/nikhpf/codeburn/issues"
   },
-  "homepage": "https://github.com/getagentseal/codeburn#readme",
+  "homepage": "https://github.com/nikhpf/codeburn#readme",
   "dependencies": {
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
