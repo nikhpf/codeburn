@@ -285,8 +285,10 @@ function buildReadme(periods: PeriodExport[]): string {
     '-----',
     '  Every cost column is already converted to the active currency. Tokens are raw integer',
     '  counts from provider telemetry. Share (%) is relative to the period/table total.',
-    '  Effective Tokens re-expresses each cost in token units (cost weighted by token type),',
-    '  giving a currency-independent magnitude that ranks rows the same way cost does.',
+    '  Effective Tokens re-expresses each cost in token units (cost divided by a fixed reference',
+    '  rate), giving a currency-independent magnitude that ranks rows the same way cost does.',
+    '  For models missing from the pricing snapshot (cost 0), it falls back to a token-type',
+    '  weighting so the row keeps a meaningful, non-zero magnitude.',
     '',
   ]
   return lines.join('\n')

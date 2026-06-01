@@ -22,7 +22,7 @@ export type ProviderCost = {
   cost: number
 }
 import type { OptimizeResult } from './optimize.js'
-import { effectiveTokensFromCost } from './effective-tokens.js'
+import { effectiveTokens, effectiveTokensFromCost } from './effective-tokens.js'
 
 const TOP_ACTIVITIES_LIMIT = 20
 const TOP_MODELS_LIMIT = 20
@@ -242,10 +242,27 @@ function buildHistory(daily: DailyHistoryEntry[] | undefined): MenubarPayload['h
   if (!daily || daily.length === 0) return { daily: [] }
   const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date))
   const trimmed = sorted.slice(-HISTORY_DAYS_LIMIT)
+  // Use the usage-aware path: when a day or model is unpriced (cost 0) but has
+  // token counts, fall back to token weighting so it keeps a non-zero magnitude
+  // instead of vanishing. The provider-filtered history path stores zero tokens
+  // (not broken down per provider in the cache), so it naturally yields 0 there.
   const withEffectiveTokens: DailyHistoryEntryOut[] = trimmed.map(d => ({
     ...d,
-    effectiveTokens: effectiveTokensFromCost(d.cost),
-    topModels: d.topModels.map(m => ({ ...m, effectiveTokens: effectiveTokensFromCost(m.cost) })),
+    effectiveTokens: effectiveTokens(d.cost, {
+      inputTokens: d.inputTokens,
+      outputTokens: d.outputTokens,
+      cacheCreationInputTokens: d.cacheWriteTokens,
+      cacheReadInputTokens: d.cacheReadTokens,
+    }),
+    topModels: d.topModels.map(m => ({
+      ...m,
+      effectiveTokens: effectiveTokens(m.cost, {
+        inputTokens: m.inputTokens,
+        outputTokens: m.outputTokens,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      }),
+    })),
   }))
   return { daily: withEffectiveTokens }
 }
