@@ -35,6 +35,12 @@ export function renderStatusBar(projects: ProjectSummary[], unit: Unit = 'tokens
   const monthStart = `${today.slice(0, 7)}-01`
 
   let todayCost = 0, todayCalls = 0, monthCost = 0, monthCalls = 0
+  // Accumulate effective tokens per call (not from the period total) so the
+  // unpriced-model fallback can use each call's own token usage. For priced
+  // calls this sums to cost/REFERENCE_RATE — identical to deriving it from the
+  // total — but a period made entirely of unpriced (cost 0) calls still shows a
+  // real magnitude instead of "0 tok".
+  let todayEffTokens = 0, monthEffTokens = 0
 
   for (const project of projects) {
     for (const session of project.sessions) {
@@ -49,20 +55,21 @@ export function renderStatusBar(projects: ProjectSummary[], unit: Unit = 'tokens
         if (!bucketTs) continue
         const day = localDateString(new Date(bucketTs))
         const turnCost = turn.assistantCalls.reduce((s, c) => s + c.costUSD, 0)
+        const turnEffTokens = turn.assistantCalls.reduce((s, c) => s + effectiveTokens(c.costUSD, c.usage), 0)
         const turnCalls = turn.assistantCalls.length
-        if (day === today) { todayCost += turnCost; todayCalls += turnCalls }
-        if (day >= monthStart) { monthCost += turnCost; monthCalls += turnCalls }
+        if (day === today) { todayCost += turnCost; todayCalls += turnCalls; todayEffTokens += turnEffTokens }
+        if (day >= monthStart) { monthCost += turnCost; monthCalls += turnCalls; monthEffTokens += turnEffTokens }
       }
     }
   }
 
   // Token-first by default: show effective tokens (cost re-expressed in token
   // units); --cost restores the dollar figures.
-  const mag = (costUSD: number): string =>
-    unit === 'cost' ? formatCost(costUSD) : `${formatTokens(effectiveTokens(costUSD))} tok`
+  const mag = (costUSD: number, effTokens: number): string =>
+    unit === 'cost' ? formatCost(costUSD) : `${formatTokens(effTokens)} tok`
 
   const lines: string[] = ['']
-  lines.push(`  ${chalk.bold('Today')}  ${chalk.yellowBright(mag(todayCost))}  ${chalk.dim(`${todayCalls} calls`)}    ${chalk.bold('Month')}  ${chalk.yellowBright(mag(monthCost))}  ${chalk.dim(`${monthCalls} calls`)}`)
+  lines.push(`  ${chalk.bold('Today')}  ${chalk.yellowBright(mag(todayCost, todayEffTokens))}  ${chalk.dim(`${todayCalls} calls`)}    ${chalk.bold('Month')}  ${chalk.yellowBright(mag(monthCost, monthEffTokens))}  ${chalk.dim(`${monthCalls} calls`)}`)
   lines.push('')
 
   return lines.join('\n')
