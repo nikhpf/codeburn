@@ -13,6 +13,7 @@ import { aggregateProjectsIntoDays, buildPeriodDataFromDays, dateKey } from './d
 import { CATEGORY_LABELS, type DateRange, type ProjectSummary, type TaskCategory } from './types.js'
 import { aggregateModelEfficiency } from './model-efficiency.js'
 import { renderDashboard } from './dashboard.js'
+import { effectiveTokensFromCost, type Unit } from './effective-tokens.js'
 import { formatDateRangeLabel, parseDateRangeFlags, parseDayFlag, parseDaysFlag, getDateRange, toPeriod, type Period } from './cli-date.js'
 import { runOptimize, scanAndDetect } from './optimize.js'
 import { renderCompare } from './compare.js'
@@ -53,6 +54,15 @@ function parseNumber(value: string): number {
 
 function parseInteger(value: string): number {
   return parseInt(value, 10)
+}
+
+// Resolve the magnitude display unit. CodeBurn is token-first by default; `--cost`
+// (or CODEBURN_UNIT=cost) restores the dollar-denominated view. Kept in one place
+// so every command resolves it identically.
+function resolveUnit(opts: { cost?: boolean }): Unit {
+  if (opts.cost) return 'cost'
+  if ((process.env['CODEBURN_UNIT'] ?? '').trim().toLowerCase() === 'cost') return 'cost'
+  return 'tokens'
 }
 
 type JsonPlanSummary = {
@@ -369,6 +379,7 @@ program
   .option('--project <name>', 'Show only projects matching name (repeatable)', collect, [])
   .option('--exclude <name>', 'Exclude projects matching name (repeatable)', collect, [])
   .option('--refresh <seconds>', 'Auto-refresh interval in seconds (0 to disable)', parseInteger, 30)
+  .option('--cost', 'Show US dollar amounts instead of the default token view')
   .action(async (opts) => {
     assertFormat(opts.format, ['tui', 'json'], 'report')
     let customRange: DateRange | null = null
@@ -404,7 +415,7 @@ program
       return
     }
     const customRangeLabel = customRange ? formatDateRangeLabel(opts.from, opts.to) : undefined
-    await renderDashboard(period, opts.provider, opts.refresh, opts.project, opts.exclude, customRange, customRangeLabel, daySelection?.day)
+    await renderDashboard(period, opts.provider, opts.refresh, opts.project, opts.exclude, customRange, customRangeLabel, daySelection?.day, resolveUnit(opts))
   })
 
 function buildPeriodData(label: string, projects: ProjectSummary[]): PeriodData {
@@ -460,6 +471,7 @@ program
   .option('--to <date>', 'End date (YYYY-MM-DD) for custom range')
   .option('--days <dates>', 'Comma-separated dates (YYYY-MM-DD) for multi-day selection')
   .option('--no-optimize', 'Skip optimize findings (menubar-json only, faster)')
+  .option('--cost', 'Show US dollar amounts instead of the default token view (terminal format)')
   .action(async (opts) => {
     assertFormat(opts.format, ['terminal', 'menubar-json', 'json'], 'status')
     if (opts.day && (opts.from || opts.to)) {
@@ -770,14 +782,14 @@ program
       const { code, rate } = getCurrency()
       const payload: {
         currency: string
-        today: { cost: number; calls: number }
-        month: { cost: number; calls: number }
+        today: { cost: number; effectiveTokens: number; calls: number }
+        month: { cost: number; effectiveTokens: number; calls: number }
         plan?: JsonPlanSummary
         plans?: JsonPlanSummaryMap
       } = {
         currency: code,
-        today: { cost: Math.round(todayData.cost * rate * 100) / 100, calls: todayData.calls },
-        month: { cost: Math.round(monthData.cost * rate * 100) / 100, calls: monthData.calls },
+        today: { cost: Math.round(todayData.cost * rate * 100) / 100, effectiveTokens: Math.round(effectiveTokensFromCost(todayData.cost)), calls: todayData.calls },
+        month: { cost: Math.round(monthData.cost * rate * 100) / 100, effectiveTokens: Math.round(effectiveTokensFromCost(monthData.cost)), calls: monthData.calls },
       }
       console.log(JSON.stringify(await attachPlanSummaries(payload)))
       return
@@ -785,7 +797,7 @@ program
 
     const monthProjects2 = fp(await parseAllSessions(getDateRange('month').range, pf))
     clearSessionCache()
-    console.log(renderStatusBar(monthProjects2))
+    console.log(renderStatusBar(monthProjects2, resolveUnit(opts)))
   })
 
 program
@@ -796,13 +808,14 @@ program
   .option('--project <name>', 'Show only projects matching name (repeatable)', collect, [])
   .option('--exclude <name>', 'Exclude projects matching name (repeatable)', collect, [])
   .option('--refresh <seconds>', 'Auto-refresh interval in seconds (0 to disable)', parseInteger, 30)
+  .option('--cost', 'Show US dollar amounts instead of the default token view')
   .action(async (opts) => {
     assertFormat(opts.format, ['tui', 'json'], 'today')
     if (opts.format === 'json') {
       await runJsonReport('today', opts.provider, opts.project, opts.exclude)
       return
     }
-    await renderDashboard('today', opts.provider, opts.refresh, opts.project, opts.exclude)
+    await renderDashboard('today', opts.provider, opts.refresh, opts.project, opts.exclude, undefined, undefined, undefined, resolveUnit(opts))
   })
 
 program
@@ -813,13 +826,14 @@ program
   .option('--project <name>', 'Show only projects matching name (repeatable)', collect, [])
   .option('--exclude <name>', 'Exclude projects matching name (repeatable)', collect, [])
   .option('--refresh <seconds>', 'Auto-refresh interval in seconds (0 to disable)', parseInteger, 30)
+  .option('--cost', 'Show US dollar amounts instead of the default token view')
   .action(async (opts) => {
     assertFormat(opts.format, ['tui', 'json'], 'month')
     if (opts.format === 'json') {
       await runJsonReport('month', opts.provider, opts.project, opts.exclude)
       return
     }
-    await renderDashboard('month', opts.provider, opts.refresh, opts.project, opts.exclude)
+    await renderDashboard('month', opts.provider, opts.refresh, opts.project, opts.exclude, undefined, undefined, undefined, resolveUnit(opts))
   })
 
 program

@@ -4,6 +4,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { render, Box, Text, useInput, useApp, useWindowSize } from 'ink'
 import { CATEGORY_LABELS, type DateRange, type ProjectSummary, type TaskCategory } from './types.js'
 import { formatCost, formatTokens } from './format.js'
+import { effectiveTokens, type EffectiveTokenUsage, type Unit } from './effective-tokens.js'
 import { aggregateModelEfficiency } from './model-efficiency.js'
 import { parseAllSessions, filterProjectsByName } from './parser.js'
 import { loadPricing } from './models.js'
@@ -190,7 +191,22 @@ function planStatusText(planUsage: PlanUsage): string {
   return `${(planUsage.spentApiEquivalentUsd / Math.max(planUsage.budgetUsd, 1)).toFixed(1)}x your subscription value. Projected month: ${formatCost(planUsage.projectedMonthUsd)} (reset in ${planUsage.daysUntilReset} days).`
 }
 
-function Overview({ projects, label, width, planUsages }: { projects: ProjectSummary[]; label: string; width: number; planUsages?: PlanUsage[] }) {
+// Magnitude helpers. In token mode the dashboard ranks and labels everything by
+// "effective tokens" (cost re-expressed in token units, see effective-tokens.ts);
+// `--cost` restores the dollar figures. Because effectiveTokens is cost ÷ a fixed
+// constant, magNumber preserves the exact ordering of the cost-based view — only
+// the displayed unit changes.
+function magLabel(unit: Unit): string {
+  return unit === 'cost' ? 'cost' : 'tokens'
+}
+function magNumber(unit: Unit, costUSD: number, usage?: EffectiveTokenUsage): number {
+  return unit === 'cost' ? costUSD : effectiveTokens(costUSD, usage)
+}
+function magString(unit: Unit, costUSD: number, usage?: EffectiveTokenUsage): string {
+  return unit === 'cost' ? formatCost(costUSD) : formatTokens(effectiveTokens(costUSD, usage))
+}
+
+function Overview({ projects, label, width, planUsages, unit }: { projects: ProjectSummary[]; label: string; width: number; planUsages?: PlanUsage[]; unit: Unit }) {
   const totalCost = projects.reduce((s, p) => s + p.totalCostUSD, 0)
   const totalCalls = projects.reduce((s, p) => s + p.totalApiCalls, 0)
   const totalSessions = projects.reduce((s, p) => s + p.sessions.length, 0)
@@ -210,19 +226,49 @@ function Overview({ projects, label, width, planUsages }: { projects: ProjectSum
         <Text bold color={ORANGE}>CodeBurn</Text>
         <Text dimColor>  {label}</Text>
       </Text>
-      <Text wrap="truncate-end">
-        <Text bold color={GOLD}>{formatCost(totalCost)}</Text>
-        <Text dimColor> cost   </Text>
-        <Text bold>{totalCalls.toLocaleString()}</Text>
-        <Text dimColor> calls   </Text>
-        <Text bold>{String(totalSessions)}</Text>
-        <Text dimColor> sessions   </Text>
-        <Text bold>{cacheHit.toFixed(1)}%</Text>
-        <Text dimColor> cache hit</Text>
-      </Text>
-      <Text dimColor wrap="truncate-end">
-        {formatTokens(totalInput)} in   {formatTokens(totalOutput)} out   {formatTokens(totalCacheRead)} cached   {formatTokens(totalCacheWrite)} written
-      </Text>
+      {/* In token mode the four-way split leads as the bold headline and cost is
+          demoted to a dim trailing stat; --cost swaps them back to the original
+          dollar-led layout. The four-way in/out/cached/written split lives only
+          here, in the full-width header where it fits at 80 cols. */}
+      {unit === 'cost' ? (
+        <>
+          <Text wrap="truncate-end">
+            <Text bold color={GOLD}>{formatCost(totalCost)}</Text>
+            <Text dimColor> cost   </Text>
+            <Text bold>{totalCalls.toLocaleString()}</Text>
+            <Text dimColor> calls   </Text>
+            <Text bold>{String(totalSessions)}</Text>
+            <Text dimColor> sessions   </Text>
+            <Text bold>{cacheHit.toFixed(1)}%</Text>
+            <Text dimColor> cache hit</Text>
+          </Text>
+          <Text dimColor wrap="truncate-end">
+            {formatTokens(totalInput)} in   {formatTokens(totalOutput)} out   {formatTokens(totalCacheRead)} cached   {formatTokens(totalCacheWrite)} written
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text wrap="truncate-end">
+            <Text bold color={GOLD}>{formatTokens(totalInput)}</Text>
+            <Text dimColor> in   </Text>
+            <Text bold color={GOLD}>{formatTokens(totalOutput)}</Text>
+            <Text dimColor> out   </Text>
+            <Text bold color={GOLD}>{formatTokens(totalCacheRead)}</Text>
+            <Text dimColor> cached   </Text>
+            <Text bold color={GOLD}>{formatTokens(totalCacheWrite)}</Text>
+            <Text dimColor> written</Text>
+          </Text>
+          <Text wrap="truncate-end">
+            <Text bold>{totalCalls.toLocaleString()}</Text>
+            <Text dimColor> calls   </Text>
+            <Text bold>{String(totalSessions)}</Text>
+            <Text dimColor> sessions   </Text>
+            <Text bold>{cacheHit.toFixed(1)}%</Text>
+            <Text dimColor> cache hit   </Text>
+            <Text dimColor>{formatCost(totalCost)} cost</Text>
+          </Text>
+        </>
+      )}
       {activePlanUsages.length > 0 && (
         <>
           {activePlanUsages.map(planUsage => {
@@ -246,7 +292,11 @@ function Overview({ projects, label, width, planUsages }: { projects: ProjectSum
   )
 }
 
-function DailyActivity({ projects, days = 14, pw, bw }: { projects: ProjectSummary[]; days?: number; pw: number; bw: number }) {
+function DailyActivity({ projects, days = 14, pw, bw, unit }: { projects: ProjectSummary[]; days?: number; pw: number; bw: number; unit: Unit }) {
+  // Accumulate per-day cost; magNumber/magString re-express it as effective
+  // tokens in token mode. Cache-token data isn't summed per-day here, so the
+  // unpriced-model fallback can't apply — daily totals aggregate many priced
+  // calls, where cost is the right basis anyway.
   const dailyCosts: Record<string, number> = {}
   const dailyCalls: Record<string, number> = {}
   for (const project of projects) {
@@ -260,16 +310,16 @@ function DailyActivity({ projects, days = 14, pw, bw }: { projects: ProjectSumma
     }
   }
   const sortedDays = days !== undefined ? Object.keys(dailyCosts).sort().slice(-days) : Object.keys(dailyCosts).sort()
-  const maxCost = Math.max(...sortedDays.map(d => dailyCosts[d] ?? 0))
+  const maxMag = Math.max(...sortedDays.map(d => magNumber(unit, dailyCosts[d] ?? 0)))
 
   return (
     <Panel title="Daily Activity" color={PANEL_COLORS.daily} width={pw}>
-      <Text dimColor wrap="truncate-end">{''.padEnd(6 + bw)}{'cost'.padStart(8)}{'calls'.padStart(6)}</Text>
+      <Text dimColor wrap="truncate-end">{''.padEnd(6 + bw)}{magLabel(unit).padStart(8)}{'calls'.padStart(6)}</Text>
       {sortedDays.map(day => (
         <Text key={day} wrap="truncate-end">
           <Text dimColor>{day.slice(5)} </Text>
-          <HBar value={dailyCosts[day] ?? 0} max={maxCost} width={bw} />
-          <Text color={GOLD}>{formatCost(dailyCosts[day] ?? 0).padStart(8)}</Text>
+          <HBar value={magNumber(unit, dailyCosts[day] ?? 0)} max={maxMag} width={bw} />
+          <Text color={GOLD}>{magString(unit, dailyCosts[day] ?? 0).padStart(8)}</Text>
           <Text>{String(dailyCalls[day] ?? 0).padStart(6)}</Text>
         </Text>
       ))}
@@ -298,26 +348,26 @@ const PROJECT_COL_AVG = 7
 const PROJECT_COL_BASE_WIDTH = 30
 const PROJECT_COL_WITH_OVERHEAD_WIDTH = 40
 
-function ProjectBreakdown({ projects, pw, bw, budgets, rows = 14 }: { projects: ProjectSummary[]; pw: number; bw: number; budgets?: Map<string, ContextBudget>; rows?: number }) {
-  const maxCost = Math.max(...projects.map(p => p.totalCostUSD))
+function ProjectBreakdown({ projects, pw, bw, budgets, rows = 14, unit }: { projects: ProjectSummary[]; pw: number; bw: number; budgets?: Map<string, ContextBudget>; rows?: number; unit: Unit }) {
+  const maxMag = Math.max(...projects.map(p => magNumber(unit, p.totalCostUSD)))
   const hasBudgets = budgets && budgets.size > 0
   const nw = Math.max(8, pw - bw - (hasBudgets ? PROJECT_COL_WITH_OVERHEAD_WIDTH : PROJECT_COL_BASE_WIDTH))
   return (
     <Panel title="By Project" color={PANEL_COLORS.project} width={pw}>
       <Text dimColor wrap="truncate-end">
-        {''.padEnd(bw + 1 + nw)}{'cost'.padStart(8)}{'avg/s'.padStart(PROJECT_COL_AVG)}{'sess'.padStart(6)}{hasBudgets ? 'overhead'.padStart(10) : ''}
+        {''.padEnd(bw + 1 + nw)}{magLabel(unit).padStart(8)}{'avg/s'.padStart(PROJECT_COL_AVG)}{'sess'.padStart(6)}{hasBudgets ? 'overhead'.padStart(10) : ''}
       </Text>
       {projects.slice(0, rows).map((project, i) => {
         const budget = budgets?.get(project.project)
-        const avgCost = project.sessions.length > 0
-          ? formatCost(project.totalCostUSD / project.sessions.length)
+        const avgMag = project.sessions.length > 0
+          ? magString(unit, project.totalCostUSD / project.sessions.length)
           : '-'
         return (
           <Text key={`${project.project}-${i}`} wrap="truncate-end">
-            <HBar value={project.totalCostUSD} max={maxCost} width={bw} />
+            <HBar value={magNumber(unit, project.totalCostUSD)} max={maxMag} width={bw} />
             <Text dimColor> {fit(shortProject(project.projectPath), nw)}</Text>
-            <Text color={GOLD}>{formatCost(project.totalCostUSD).padStart(8)}</Text>
-            <Text color={GOLD}>{avgCost.padStart(PROJECT_COL_AVG)}</Text>
+            <Text color={GOLD}>{magString(unit, project.totalCostUSD).padStart(8)}</Text>
+            <Text color={GOLD}>{avgMag.padStart(PROJECT_COL_AVG)}</Text>
             <Text>{String(project.sessions.length).padStart(6)}</Text>
             {hasBudgets && <Text color="#7B9EF5">{(budget ? formatTokens(budget.total) : '-').padStart(10)}</Text>}
           </Text>
@@ -334,27 +384,37 @@ const MODEL_COL_ONESHOT = 7
 const MODEL_NAME_WIDTH = 14
 const MIN_EDIT_TURNS_FOR_RATE = 5
 
-function ModelBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; pw: number; bw: number }) {
-  const modelTotals: Record<string, { calls: number; costUSD: number; freshInput: number; cacheRead: number; cacheWrite: number }> = {}
+function ModelBreakdown({ projects, pw, bw, unit }: { projects: ProjectSummary[]; pw: number; bw: number; unit: Unit }) {
+  const modelTotals: Record<string, { calls: number; costUSD: number; freshInput: number; output: number; cacheRead: number; cacheWrite: number }> = {}
   const modelEfficiency = aggregateModelEfficiency(projects)
   for (const project of projects) {
     for (const session of project.sessions) {
       for (const [model, data] of Object.entries(session.modelBreakdown)) {
-        if (!modelTotals[model]) modelTotals[model] = { calls: 0, costUSD: 0, freshInput: 0, cacheRead: 0, cacheWrite: 0 }
+        if (!modelTotals[model]) modelTotals[model] = { calls: 0, costUSD: 0, freshInput: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
         modelTotals[model].calls += data.calls
         modelTotals[model].costUSD += data.costUSD
         modelTotals[model].freshInput += data.tokens.inputTokens
+        modelTotals[model].output += data.tokens.outputTokens
         modelTotals[model].cacheRead += data.tokens.cacheReadInputTokens
         modelTotals[model].cacheWrite += data.tokens.cacheCreationInputTokens
       }
     }
   }
-  const sorted = Object.entries(modelTotals).sort(([, a], [, b]) => b.costUSD - a.costUSD)
-  const maxCost = sorted[0]?.[1]?.costUSD ?? 0
+  // Per-model effective tokens use the usage-aware path: a model missing from the
+  // pricing snapshot (costUSD == 0) still gets a non-zero magnitude from token
+  // weighting instead of vanishing from the ranking.
+  const usageOf = (d: { freshInput: number; output: number; cacheRead: number; cacheWrite: number }): EffectiveTokenUsage => ({
+    inputTokens: d.freshInput,
+    outputTokens: d.output,
+    cacheCreationInputTokens: d.cacheWrite,
+    cacheReadInputTokens: d.cacheRead,
+  })
+  const sorted = Object.entries(modelTotals).sort(([, a], [, b]) => magNumber(unit, b.costUSD, usageOf(b)) - magNumber(unit, a.costUSD, usageOf(a)))
+  const maxMag = sorted[0] ? magNumber(unit, sorted[0][1].costUSD, usageOf(sorted[0][1])) : 0
 
   return (
     <Panel title="By Model" color={PANEL_COLORS.model} width={pw}>
-      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 1 + MODEL_NAME_WIDTH)}{'cost'.padStart(MODEL_COL_COST)}{'cache'.padStart(MODEL_COL_CACHE)}{'calls'.padStart(MODEL_COL_CALLS)}{'1-shot'.padStart(MODEL_COL_ONESHOT)}</Text>
+      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 1 + MODEL_NAME_WIDTH)}{magLabel(unit).padStart(MODEL_COL_COST)}{'cache'.padStart(MODEL_COL_CACHE)}{'calls'.padStart(MODEL_COL_CALLS)}{'1-shot'.padStart(MODEL_COL_ONESHOT)}</Text>
       {sorted.map(([model, data], i) => {
         const totalInput = data.freshInput + data.cacheRead + data.cacheWrite
         const cacheHit = totalInput > 0 ? (data.cacheRead / totalInput) * 100 : 0
@@ -365,9 +425,9 @@ function ModelBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; pw: 
           : '-'
         return (
           <Text key={`${model}-${i}`} wrap="truncate-end">
-            <HBar value={data.costUSD} max={maxCost} width={bw} />
+            <HBar value={magNumber(unit, data.costUSD, usageOf(data))} max={maxMag} width={bw} />
             <Text> {fit(model, MODEL_NAME_WIDTH)}</Text>
-            <Text color={GOLD}>{formatCost(data.costUSD).padStart(MODEL_COL_COST)}</Text>
+            <Text color={GOLD}>{magString(unit, data.costUSD, usageOf(data)).padStart(MODEL_COL_COST)}</Text>
             <Text>{cacheLabel.padStart(MODEL_COL_CACHE)}</Text>
             <Text>{String(data.calls).padStart(MODEL_COL_CALLS)}</Text>
             <Text>{oneShotLabel.padStart(MODEL_COL_ONESHOT)}</Text>
@@ -380,7 +440,7 @@ function ModelBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; pw: 
 
 const SKILL_SUB_ROWS_LIMIT = 5
 
-function ActivityBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; pw: number; bw: number }) {
+function ActivityBreakdown({ projects, pw, bw, unit }: { projects: ProjectSummary[]; pw: number; bw: number; unit: Unit }) {
   const categoryTotals: Record<string, { turns: number; costUSD: number; editTurns: number; oneShotTurns: number }> = {}
   const skillTotals: Record<string, { turns: number; costUSD: number; editTurns: number; oneShotTurns: number }> = {}
   for (const project of projects) {
@@ -401,19 +461,19 @@ function ActivityBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; p
       }
     }
   }
-  const sorted = Object.entries(categoryTotals).sort(([, a], [, b]) => b.costUSD - a.costUSD)
-  const sortedSkills = Object.entries(skillTotals).sort(([, a], [, b]) => b.costUSD - a.costUSD).slice(0, SKILL_SUB_ROWS_LIMIT)
-  const maxCost = sorted[0]?.[1]?.costUSD ?? 0
+  const sorted = Object.entries(categoryTotals).sort(([, a], [, b]) => magNumber(unit, b.costUSD) - magNumber(unit, a.costUSD))
+  const sortedSkills = Object.entries(skillTotals).sort(([, a], [, b]) => magNumber(unit, b.costUSD) - magNumber(unit, a.costUSD)).slice(0, SKILL_SUB_ROWS_LIMIT)
+  const maxMag = sorted[0] ? magNumber(unit, sorted[0][1].costUSD) : 0
   return (
     <Panel title="By Activity" color={PANEL_COLORS.activity} width={pw}>
-      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 14)}{'cost'.padStart(8)}{'turns'.padStart(6)}{'1-shot'.padStart(7)}</Text>
+      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 14)}{magLabel(unit).padStart(8)}{'turns'.padStart(6)}{'1-shot'.padStart(7)}</Text>
       {sorted.flatMap(([cat, data]) => {
         const oneShotPct = data.editTurns > 0 ? Math.round((data.oneShotTurns / data.editTurns) * 100) + '%' : '-'
         const rows = [
           <Text key={cat} wrap="truncate-end">
-            <HBar value={data.costUSD} max={maxCost} width={bw} />
+            <HBar value={magNumber(unit, data.costUSD)} max={maxMag} width={bw} />
             <Text color={CATEGORY_COLORS[cat as TaskCategory] ?? '#666666'}> {fit(CATEGORY_LABELS[cat as TaskCategory] ?? cat, 13)}</Text>
-            <Text color={GOLD}>{formatCost(data.costUSD).padStart(8)}</Text>
+            <Text color={GOLD}>{magString(unit, data.costUSD).padStart(8)}</Text>
             <Text>{String(data.turns).padStart(6)}</Text>
             <Text color={data.editTurns === 0 ? DIM : oneShotPct === '100%' ? '#5BF58C' : ORANGE}>{String(oneShotPct).padStart(7)}</Text>
           </Text>,
@@ -423,9 +483,9 @@ function ActivityBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; p
             const subPct = sd.editTurns > 0 ? Math.round((sd.oneShotTurns / sd.editTurns) * 100) + '%' : '-'
             rows.push(
               <Text key={`${cat}:${skill}`} wrap="truncate-end" dimColor>
-                <HBar value={sd.costUSD} max={maxCost} width={bw} />
+                <HBar value={magNumber(unit, sd.costUSD)} max={maxMag} width={bw} />
                 <Text> {fit(`  /${skill}`, 13)}</Text>
-                <Text>{formatCost(sd.costUSD).padStart(8)}</Text>
+                <Text>{magString(unit, sd.costUSD).padStart(8)}</Text>
                 <Text>{String(sd.turns).padStart(6)}</Text>
                 <Text>{String(subPct).padStart(7)}</Text>
               </Text>,
@@ -504,21 +564,21 @@ function BashBreakdown({ projects, pw, bw }: { projects: ProjectSummary[]; pw: n
   )
 }
 
-function SkillsAndAgents({ projects, pw, bw }: { projects: ProjectSummary[]; pw: number; bw: number }) {
+function SkillsAndAgents({ projects, pw, bw, unit }: { projects: ProjectSummary[]; pw: number; bw: number; unit: Unit }) {
   const merged: Record<string, { uses: number; cost: number }> = {}
   for (const project of projects) { for (const session of project.sessions) {
     for (const [skill, d] of Object.entries(session.skillBreakdown)) { const e = merged[skill] ?? { uses: 0, cost: 0 }; e.uses += d.turns; e.cost += d.costUSD; merged[skill] = e }
     for (const [agent, d] of Object.entries(session.subagentBreakdown)) { const e = merged[agent] ?? { uses: 0, cost: 0 }; e.uses += d.calls; e.cost += d.costUSD; merged[agent] = e }
   } }
-  const sorted = Object.entries(merged).sort(([, a], [, b]) => b.cost - a.cost)
+  const sorted = Object.entries(merged).sort(([, a], [, b]) => magNumber(unit, b.cost) - magNumber(unit, a.cost))
   if (sorted.length === 0) return <Panel title="Skills & Agents" color={PANEL_COLORS.skills} width={pw}><Text dimColor>No skill/agent usage</Text></Panel>
-  const maxCost = sorted[0]?.[1]?.cost ?? 0
+  const maxMag = sorted[0] ? magNumber(unit, sorted[0][1].cost) : 0
   const nw = Math.max(6, pw - bw - 22)
   return (
     <Panel title="Skills & Agents" color={PANEL_COLORS.skills} width={pw}>
-      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 1 + nw)}{'uses'.padStart(6)}{'cost'.padStart(8)}</Text>
+      <Text dimColor wrap="truncate-end">{''.padEnd(bw + 1 + nw)}{'uses'.padStart(6)}{magLabel(unit).padStart(8)}</Text>
       {sorted.slice(0, 10).map(([name, d]) => (
-        <Text key={name} wrap="truncate-end"><HBar value={d.cost} max={maxCost} width={bw} /><Text> {fit(name, nw)}</Text><Text>{String(d.uses).padStart(6)}</Text><Text color={GOLD}>{formatCost(d.cost).padStart(8)}</Text></Text>
+        <Text key={name} wrap="truncate-end"><HBar value={magNumber(unit, d.cost)} max={maxMag} width={bw} /><Text> {fit(name, nw)}</Text><Text>{String(d.uses).padStart(6)}</Text><Text color={GOLD}>{magString(unit, d.cost).padStart(8)}</Text></Text>
       ))}
     </Panel>
   )
@@ -696,7 +756,7 @@ function Row({ wide, width, children }: { wide: boolean; width: number; children
   return <>{children}</>
 }
 
-function DashboardContent({ projects, period, columns, activeProvider, budgets, planUsages, label, dayMode }: { projects: ProjectSummary[]; period: Period; columns?: number; activeProvider?: string; budgets?: Map<string, ContextBudget>; planUsages?: PlanUsage[]; label?: string; dayMode?: boolean }) {
+function DashboardContent({ projects, period, columns, activeProvider, budgets, planUsages, label, dayMode, unit = 'tokens' }: { projects: ProjectSummary[]; period: Period; columns?: number; activeProvider?: string; budgets?: Map<string, ContextBudget>; planUsages?: PlanUsage[]; label?: string; dayMode?: boolean; unit?: Unit }) {
   const { dashWidth, wide, halfWidth, barWidth } = getLayout(columns)
   const isCursor = activeProvider === 'cursor'
   const activeLabel = label ?? PERIOD_LABELS[period]
@@ -705,19 +765,19 @@ function DashboardContent({ projects, period, columns, activeProvider, budgets, 
   const days = dayMode ? 1 : period === 'all' ? undefined : (period === 'month' || period === '30days' ? 31 : 14)
   return (
     <Box flexDirection="column" width={dashWidth}>
-      <Overview projects={projects} label={activeLabel} width={dashWidth} planUsages={planUsages} />
-      <Row wide={wide} width={dashWidth}><DailyActivity projects={projects} days={days} pw={pw} bw={barWidth} /><ProjectBreakdown projects={projects} pw={pw} bw={barWidth} budgets={budgets} rows={dayMode ? 8 : period === 'all' ? 14 : period === 'month' || period === '30days' ? 14 : 8} /></Row>
-      <Row wide={wide} width={dashWidth}><ActivityBreakdown projects={projects} pw={pw} bw={barWidth} /><ModelBreakdown projects={projects} pw={pw} bw={barWidth} /></Row>
+      <Overview projects={projects} label={activeLabel} width={dashWidth} planUsages={planUsages} unit={unit} />
+      <Row wide={wide} width={dashWidth}><DailyActivity projects={projects} days={days} pw={pw} bw={barWidth} unit={unit} /><ProjectBreakdown projects={projects} pw={pw} bw={barWidth} budgets={budgets} rows={dayMode ? 8 : period === 'all' ? 14 : period === 'month' || period === '30days' ? 14 : 8} unit={unit} /></Row>
+      <Row wide={wide} width={dashWidth}><ActivityBreakdown projects={projects} pw={pw} bw={barWidth} unit={unit} /><ModelBreakdown projects={projects} pw={pw} bw={barWidth} unit={unit} /></Row>
       {isCursor ? (
         <ToolBreakdown projects={projects} pw={dashWidth} bw={barWidth} title="Languages" filterPrefix="lang:" />
       ) : (
-        <><Row wide={wide} width={dashWidth}><ToolBreakdown projects={projects} pw={pw} bw={barWidth} /><BashBreakdown projects={projects} pw={pw} bw={barWidth} /></Row><Row wide={wide} width={dashWidth}><SkillsAndAgents projects={projects} pw={pw} bw={barWidth} /><McpBreakdown projects={projects} pw={pw} bw={barWidth} /></Row></>
+        <><Row wide={wide} width={dashWidth}><ToolBreakdown projects={projects} pw={pw} bw={barWidth} /><BashBreakdown projects={projects} pw={pw} bw={barWidth} /></Row><Row wide={wide} width={dashWidth}><SkillsAndAgents projects={projects} pw={pw} bw={barWidth} unit={unit} /><McpBreakdown projects={projects} pw={pw} bw={barWidth} /></Row></>
       )}
     </Box>
   )
 }
 
-function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider, initialPlanUsages, refreshSeconds, projectFilter, excludeFilter, customRange, customRangeLabel, initialDay }: {
+function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider, initialPlanUsages, refreshSeconds, projectFilter, excludeFilter, customRange, customRangeLabel, initialDay, unit = 'tokens' }: {
   initialProjects: ProjectSummary[]
   initialPeriod: Period
   initialProvider: string
@@ -728,6 +788,7 @@ function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider,
   customRange?: DateRange | null
   customRangeLabel?: string
   initialDay?: string
+  unit?: Unit
 }) {
   const { exit } = useApp()
   const [period, setPeriod] = useState<Period>(initialPeriod)
@@ -1004,7 +1065,7 @@ function InteractiveDashboard({ initialProjects, initialPeriod, initialProvider,
         ? <CompareView projects={projects} onBack={() => setView('dashboard')} />
         : view === 'optimize' && optimizeResult
           ? <OptimizeView findings={optimizeResult.findings} costRate={optimizeResult.costRate} projects={projects} label={headerLabel} width={dashWidth} healthScore={optimizeResult.healthScore} healthGrade={optimizeResult.healthGrade} cursor={findingsCursor} />
-          : <DashboardContent projects={projects} period={period} columns={columns} activeProvider={activeProvider} budgets={projectBudgets} planUsages={planUsages} label={headerLabel} dayMode={isDayMode} />}
+          : <DashboardContent projects={projects} period={period} columns={columns} activeProvider={activeProvider} budgets={projectBudgets} planUsages={planUsages} label={headerLabel} dayMode={isDayMode} unit={unit} />}
       {view !== 'compare' && <StatusBar width={dashWidth} showProvider={multipleProviders} view={view} findingCount={findingCount} optimizeAvailable={optimizeAvailable} compareAvailable={compareAvailable} customRange={isCustomRange} dayMode={isDayMode} />}
     </Box>
   )
@@ -1027,18 +1088,18 @@ function CustomRangeBanner({ label, width }: { label: string; width: number }) {
   )
 }
 
-function StaticDashboard({ projects, period, activeProvider, planUsages, label, dayMode }: { projects: ProjectSummary[]; period: Period; activeProvider?: string; planUsages?: PlanUsage[]; label?: string; dayMode?: boolean }) {
+function StaticDashboard({ projects, period, activeProvider, planUsages, label, dayMode, unit = 'tokens' }: { projects: ProjectSummary[]; period: Period; activeProvider?: string; planUsages?: PlanUsage[]; label?: string; dayMode?: boolean; unit?: Unit }) {
   const { columns } = useWindowSize()
   const { dashWidth } = getLayout(columns)
   return (
     <Box flexDirection="column" width={dashWidth}>
       {dayMode ? <DayBanner label={label ?? PERIOD_LABELS[period]} width={dashWidth} /> : <PeriodTabs active={period} />}
-      <DashboardContent projects={projects} period={period} columns={columns} activeProvider={activeProvider} planUsages={planUsages} label={label} dayMode={dayMode} />
+      <DashboardContent projects={projects} period={period} columns={columns} activeProvider={activeProvider} planUsages={planUsages} label={label} dayMode={dayMode} unit={unit} />
     </Box>
   )
 }
 
-export async function renderDashboard(period: Period = 'week', provider: string = 'all', refreshSeconds?: number, projectFilter?: string[], excludeFilter?: string[], customRange?: DateRange | null, customRangeLabel?: string, initialDay?: string): Promise<void> {
+export async function renderDashboard(period: Period = 'week', provider: string = 'all', refreshSeconds?: number, projectFilter?: string[], excludeFilter?: string[], customRange?: DateRange | null, customRangeLabel?: string, initialDay?: string, unit: Unit = 'tokens'): Promise<void> {
   await loadPricing()
   const dayRange = initialDay ? getDayRange(initialDay) : null
   const range = dayRange ?? customRange ?? getPeriodRange(period)
@@ -1049,11 +1110,11 @@ export async function renderDashboard(period: Period = 'week', provider: string 
   patchStdoutForWindows()
   if (isTTY) {
     const { waitUntilExit } = render(
-      <InteractiveDashboard initialProjects={filteredProjects} initialPeriod={period} initialProvider={provider} initialPlanUsages={planUsages} refreshSeconds={refreshSeconds} projectFilter={projectFilter} excludeFilter={excludeFilter} customRange={customRange} customRangeLabel={customRangeLabel} initialDay={initialDay} />
+      <InteractiveDashboard initialProjects={filteredProjects} initialPeriod={period} initialProvider={provider} initialPlanUsages={planUsages} refreshSeconds={refreshSeconds} projectFilter={projectFilter} excludeFilter={excludeFilter} customRange={customRange} customRangeLabel={customRangeLabel} initialDay={initialDay} unit={unit} />
     )
     await waitUntilExit()
   } else {
-    const { unmount } = render(<StaticDashboard projects={filteredProjects} period={period} activeProvider={provider} planUsages={planUsages} label={label} dayMode={initialDay != null} />, { patchConsole: false })
+    const { unmount } = render(<StaticDashboard projects={filteredProjects} period={period} activeProvider={provider} planUsages={planUsages} label={label} dayMode={initialDay != null} unit={unit} />, { patchConsole: false })
     unmount()
   }
 }

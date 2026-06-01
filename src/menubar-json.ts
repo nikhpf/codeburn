@@ -22,6 +22,7 @@ export type ProviderCost = {
   cost: number
 }
 import type { OptimizeResult } from './optimize.js'
+import { effectiveTokensFromCost } from './effective-tokens.js'
 
 const TOP_ACTIVITIES_LIMIT = 20
 const TOP_MODELS_LIMIT = 20
@@ -51,11 +52,22 @@ export type DailyHistoryEntry = {
   topModels: DailyModelBreakdown[]
 }
 
+// Output shapes carry effectiveTokens (cost re-expressed in token units) alongside
+// the cost fields. The input DailyHistoryEntry / DailyModelBreakdown stay cost-only
+// — effectiveTokens is derived in buildHistory so the cache/day-aggregator that
+// construct the inputs don't have to change.
+export type DailyModelBreakdownOut = DailyModelBreakdown & { effectiveTokens: number }
+export type DailyHistoryEntryOut = Omit<DailyHistoryEntry, 'topModels'> & {
+  effectiveTokens: number
+  topModels: DailyModelBreakdownOut[]
+}
+
 export type MenubarPayload = {
   generated: string
   current: {
     label: string
     cost: number
+    effectiveTokens: number
     calls: number
     sessions: number
     oneShotRate: number | null
@@ -65,27 +77,35 @@ export type MenubarPayload = {
     topActivities: Array<{
       name: string
       cost: number
+      effectiveTokens: number
       turns: number
       oneShotRate: number | null
     }>
     topModels: Array<{
       name: string
       cost: number
+      effectiveTokens: number
       calls: number
     }>
     providers: Record<string, number>
+    // Sibling map (provider → effective tokens). `providers` stays a name→cost
+    // map so existing menubar clients keep working unchanged.
+    providersEffectiveTokens: Record<string, number>
     topProjects: Array<{
       name: string
       cost: number
+      effectiveTokens: number
       sessions: number
       avgCostPerSession: number
+      avgEffectiveTokensPerSession: number
       sessionDetails: Array<{
         cost: number
+        effectiveTokens: number
         calls: number
         inputTokens: number
         outputTokens: number
         date: string
-        models: Array<{ name: string; cost: number }>
+        models: Array<{ name: string; cost: number; effectiveTokens: number }>
       }>
     }>
     modelEfficiency: Array<{
@@ -96,6 +116,7 @@ export type MenubarPayload = {
     topSessions: Array<{
       project: string
       cost: number
+      effectiveTokens: number
       calls: number
       date: string
     }>
@@ -124,8 +145,8 @@ export type MenubarPayload = {
       }>
     }
     tools: Array<{ name: string; calls: number }>
-    skills: Array<{ name: string; turns: number; cost: number }>
-    subagents: Array<{ name: string; calls: number; cost: number }>
+    skills: Array<{ name: string; turns: number; cost: number; effectiveTokens: number }>
+    subagents: Array<{ name: string; calls: number; cost: number; effectiveTokens: number }>
     mcpServers: Array<{ name: string; calls: number }>
   }
   optimize: {
@@ -138,7 +159,7 @@ export type MenubarPayload = {
     }>
   }
   history: {
-    daily: DailyHistoryEntry[]
+    daily: DailyHistoryEntryOut[]
   }
 }
 
@@ -168,6 +189,7 @@ function buildTopActivities(categories: PeriodData['categories']): MenubarPayloa
   return categories.slice(0, TOP_ACTIVITIES_LIMIT).map(cat => ({
     name: cat.name,
     cost: cat.cost,
+    effectiveTokens: effectiveTokensFromCost(cat.cost),
     turns: cat.turns,
     oneShotRate: oneShotRateFor(cat.editTurns, cat.oneShotTurns),
   }))
@@ -177,7 +199,7 @@ function buildTopModels(models: PeriodData['models']): MenubarPayload['current']
   return models
     .filter(m => m.name !== SYNTHETIC_MODEL_NAME)
     .slice(0, TOP_MODELS_LIMIT)
-    .map(m => ({ name: m.name, cost: m.cost, calls: m.calls }))
+    .map(m => ({ name: m.name, cost: m.cost, effectiveTokens: effectiveTokensFromCost(m.cost), calls: m.calls }))
 }
 
 function buildOptimize(optimize: OptimizeResult | null): MenubarPayload['optimize'] {
@@ -207,11 +229,25 @@ function buildProviders(providers: ProviderCost[]): Record<string, number> {
   return map
 }
 
+function buildProvidersEffectiveTokens(providers: ProviderCost[]): Record<string, number> {
+  const map: Record<string, number> = {}
+  for (const p of providers) {
+    if (p.cost < 0) continue
+    map[p.name.toLowerCase()] = effectiveTokensFromCost(p.cost)
+  }
+  return map
+}
+
 function buildHistory(daily: DailyHistoryEntry[] | undefined): MenubarPayload['history'] {
   if (!daily || daily.length === 0) return { daily: [] }
   const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date))
   const trimmed = sorted.slice(-HISTORY_DAYS_LIMIT)
-  return { daily: trimmed }
+  const withEffectiveTokens: DailyHistoryEntryOut[] = trimmed.map(d => ({
+    ...d,
+    effectiveTokens: effectiveTokensFromCost(d.cost),
+    topModels: d.topModels.map(m => ({ ...m, effectiveTokens: effectiveTokensFromCost(m.cost) })),
+  }))
+  return { daily: withEffectiveTokens }
 }
 
 function buildTopProjects(projects: PeriodData['projects']): MenubarPayload['current']['topProjects'] {
@@ -222,15 +258,18 @@ function buildTopProjects(projects: PeriodData['projects']): MenubarPayload['cur
     .map(p => ({
       name: p.name,
       cost: p.cost,
+      effectiveTokens: effectiveTokensFromCost(p.cost),
       sessions: p.sessions,
       avgCostPerSession: p.sessions > 0 ? p.cost / p.sessions : 0,
+      avgEffectiveTokensPerSession: p.sessions > 0 ? effectiveTokensFromCost(p.cost) / p.sessions : 0,
       sessionDetails: (p.sessionDetails ?? []).map(s => ({
         cost: s.cost,
+        effectiveTokens: effectiveTokensFromCost(s.cost),
         calls: s.calls,
         inputTokens: s.inputTokens,
         outputTokens: s.outputTokens,
         date: s.date,
-        models: s.models,
+        models: s.models.map(m => ({ ...m, effectiveTokens: effectiveTokensFromCost(m.cost) })),
       })),
     }))
 }
@@ -247,14 +286,16 @@ function buildTopSessions(sessions: PeriodData['topSessions']): MenubarPayload['
   return (sessions ?? [])
     .sort((a, b) => b.cost - a.cost)
     .slice(0, TOP_SESSIONS_LIMIT)
-    .map(s => ({ project: s.project, cost: s.cost, calls: s.calls, date: s.date }))
+    .map(s => ({ project: s.project, cost: s.cost, effectiveTokens: effectiveTokensFromCost(s.cost), calls: s.calls, date: s.date }))
 }
 
+// Inputs are cost-only (USD); buildMenubarPayload derives effectiveTokens when
+// assembling the payload, so callers don't compute it.
 export type BreakdownArrays = {
-  tools?: MenubarPayload['current']['tools']
-  skills?: MenubarPayload['current']['skills']
-  subagents?: MenubarPayload['current']['subagents']
-  mcpServers?: MenubarPayload['current']['mcpServers']
+  tools?: Array<{ name: string; calls: number }>
+  skills?: Array<{ name: string; turns: number; cost: number }>
+  subagents?: Array<{ name: string; calls: number; cost: number }>
+  mcpServers?: Array<{ name: string; calls: number }>
 }
 
 export function buildMenubarPayload(
@@ -271,6 +312,7 @@ export function buildMenubarPayload(
     current: {
       label: current.label,
       cost: current.cost,
+      effectiveTokens: effectiveTokensFromCost(current.cost),
       calls: current.calls,
       sessions: current.sessions,
       oneShotRate: aggregateOneShotRate(current.categories),
@@ -280,14 +322,15 @@ export function buildMenubarPayload(
       topActivities: buildTopActivities(current.categories),
       topModels: buildTopModels(current.models),
       providers: buildProviders(providers),
+      providersEffectiveTokens: buildProvidersEffectiveTokens(providers),
       topProjects: buildTopProjects(current.projects ?? []),
       modelEfficiency: buildModelEfficiency(current.modelEfficiency ?? []),
       topSessions: buildTopSessions(current.topSessions ?? []),
       retryTax: retryTax ?? { totalUSD: 0, retries: 0, editTurns: 0, byModel: [] },
       routingWaste: routingWaste ?? { totalSavingsUSD: 0, baselineModel: '', baselineCostPerEdit: 0, byModel: [] },
       tools: breakdowns?.tools ?? [],
-      skills: breakdowns?.skills ?? [],
-      subagents: breakdowns?.subagents ?? [],
+      skills: (breakdowns?.skills ?? []).map(s => ({ ...s, effectiveTokens: effectiveTokensFromCost(s.cost) })),
+      subagents: (breakdowns?.subagents ?? []).map(s => ({ ...s, effectiveTokens: effectiveTokensFromCost(s.cost) })),
       mcpServers: breakdowns?.mcpServers ?? [],
     },
     optimize: buildOptimize(optimize),

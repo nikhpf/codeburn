@@ -5,6 +5,14 @@ import { CATEGORY_LABELS, type ProjectSummary, type TaskCategory } from './types
 import { getCurrency, convertCost, roundForActiveCurrency } from './currency.js'
 import { dateKey } from './day-aggregator.js'
 import { aggregateModelEfficiency } from './model-efficiency.js'
+import { effectiveTokensFromCost } from './effective-tokens.js'
+
+// Effective tokens are derived from the raw USD cost (not the currency-converted
+// figure), since the reference rate is defined in USD/token. Rounded to a whole
+// token for a clean column.
+function effTokens(costUSD: number): number {
+  return Math.round(effectiveTokensFromCost(costUSD))
+}
 
 function escCsv(s: string): string {
   const sanitized = /^[\t\r=+\-@]/.test(s) ? `'${s}` : s
@@ -71,6 +79,7 @@ function buildDailyRows(projects: ProjectSummary[], period: string): Row[] {
     Period: period,
     Date: date,
     [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost)),
+    'Effective Tokens': effTokens(d.cost),
     'API Calls': d.calls,
     Sessions: d.sessions.size,
     'Input Tokens': d.input,
@@ -99,6 +108,7 @@ function buildActivityRows(projects: ProjectSummary[], period: string): Row[] {
       Period: period,
       Activity: CATEGORY_LABELS[cat as TaskCategory] ?? cat,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost)),
+      'Effective Tokens': effTokens(d.cost),
       'Share (%)': pct(d.cost, totalCost),
       Turns: d.turns,
     }))
@@ -131,6 +141,7 @@ function buildModelRows(projects: ProjectSummary[], period: string): Row[] {
         Period: period,
         Model: model,
         [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost)),
+        'Effective Tokens': effTokens(d.cost),
         'Share (%)': pct(d.cost, totalCost),
         'API Calls': d.calls,
         'Edit Turns': efficiency?.editTurns ?? 0,
@@ -138,6 +149,9 @@ function buildModelRows(projects: ProjectSummary[], period: string): Row[] {
         'Retries/Edit': efficiency?.retriesPerEdit ?? '',
         [`Cost/Edit (${code})`]: efficiency?.costPerEditUSD !== null && efficiency?.costPerEditUSD !== undefined
           ? roundForActiveCurrency(convertCost(efficiency.costPerEditUSD))
+          : '',
+        'Effective Tokens/Edit': efficiency?.costPerEditUSD !== null && efficiency?.costPerEditUSD !== undefined
+          ? effTokens(efficiency.costPerEditUSD)
           : '',
         'Input Tokens': d.input,
         'Output Tokens': d.output,
@@ -194,7 +208,9 @@ function buildProjectRows(projects: ProjectSummary[]): Row[] {
     .map(p => ({
       Project: p.projectPath,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(p.totalCostUSD)),
+      'Effective Tokens': effTokens(p.totalCostUSD),
       [`Avg/Session (${code})`]: p.sessions.length > 0 ? roundForActiveCurrency(convertCost(p.totalCostUSD / p.sessions.length)) : '',
+      'Effective Tokens/Session': p.sessions.length > 0 ? effTokens(p.totalCostUSD / p.sessions.length) : '',
       'Share (%)': pct(p.totalCostUSD, total),
       'API Calls': p.totalApiCalls,
       Sessions: p.sessions.length,
@@ -211,6 +227,7 @@ function buildSessionRows(projects: ProjectSummary[]): Row[] {
         'Session ID': s.sessionId,
         'Started At': s.firstTimestamp ?? '',
         [`Cost (${code})`]: roundForActiveCurrency(convertCost(s.totalCostUSD)),
+        'Effective Tokens': effTokens(s.totalCostUSD),
         'API Calls': s.apiCalls,
         Turns: s.turns.length,
       })
@@ -234,6 +251,7 @@ function buildSummaryRows(periods: PeriodExport[]): Row[] {
     return {
       Period: p.label,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(cost)),
+      'Effective Tokens': effTokens(cost),
       'API Calls': calls,
       Sessions: sessions,
       Projects: projectCount,
@@ -267,6 +285,8 @@ function buildReadme(periods: PeriodExport[]): string {
     '-----',
     '  Every cost column is already converted to the active currency. Tokens are raw integer',
     '  counts from provider telemetry. Share (%) is relative to the period/table total.',
+    '  Effective Tokens re-expresses each cost in token units (cost weighted by token type),',
+    '  giving a currency-independent magnitude that ranks rows the same way cost does.',
     '',
   ]
   return lines.join('\n')
