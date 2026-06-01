@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildMenubarPayload, type PeriodData, type ProviderCost } from '../src/menubar-json.js'
+import { effectiveTokensFromCost } from '../src/effective-tokens.js'
 import type { OptimizeResult } from '../src/optimize.js'
 
 function emptyPeriod(label: string): PeriodData {
@@ -214,8 +215,14 @@ describe('buildMenubarPayload', () => {
       { date: '2026-04-16', cost: 20, calls: 75, inputTokens: 150, outputTokens: 350, cacheReadTokens: 8000, cacheWriteTokens: 1200, topModels: [] },
     ]
     const payload = buildMenubarPayload(emptyPeriod('Today'), [], null, history)
-    expect(payload.history.daily[0]).toEqual(history[0])
-    expect(payload.history.daily[1]).toEqual(history[1])
+    // Original cost/token fields are preserved unchanged...
+    expect(payload.history.daily[0]).toMatchObject(history[0]!)
+    expect(payload.history.daily[1]).toMatchObject(history[1]!)
+    // ...and effectiveTokens is derived from cost alongside them, on both the
+    // day entry and each topModels entry.
+    expect(payload.history.daily[0]!.effectiveTokens).toBeCloseTo(effectiveTokensFromCost(10))
+    expect(payload.history.daily[0]!.topModels[0]!.effectiveTokens).toBeCloseTo(effectiveTokensFromCost(8))
+    expect(payload.history.daily[1]!.effectiveTokens).toBeCloseTo(effectiveTokensFromCost(20))
   })
 
   it('returns empty history when none supplied', () => {

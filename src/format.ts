@@ -1,5 +1,6 @@
 import chalk from 'chalk'
 import type { ProjectSummary } from './types.js'
+import { effectiveTokens, type Unit } from './effective-tokens.js'
 
 // Re-exported from currency.ts so existing imports from './format.js' keep working.
 // The currency-aware version applies exchange rate and symbol automatically.
@@ -28,7 +29,7 @@ function localDateString(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
-export function renderStatusBar(projects: ProjectSummary[]): string {
+export function renderStatusBar(projects: ProjectSummary[], unit: Unit = 'tokens'): string {
   const now = new Date()
   const today = localDateString(now)
   const monthStart = `${today.slice(0, 7)}-01`
@@ -55,8 +56,13 @@ export function renderStatusBar(projects: ProjectSummary[]): string {
     }
   }
 
+  // Token-first by default: show effective tokens (cost re-expressed in token
+  // units); --cost restores the dollar figures.
+  const mag = (costUSD: number): string =>
+    unit === 'cost' ? formatCost(costUSD) : `${formatTokens(effectiveTokens(costUSD))} tok`
+
   const lines: string[] = ['']
-  lines.push(`  ${chalk.bold('Today')}  ${chalk.yellowBright(formatCost(todayCost))}  ${chalk.dim(`${todayCalls} calls`)}    ${chalk.bold('Month')}  ${chalk.yellowBright(formatCost(monthCost))}  ${chalk.dim(`${monthCalls} calls`)}`)
+  lines.push(`  ${chalk.bold('Today')}  ${chalk.yellowBright(mag(todayCost))}  ${chalk.dim(`${todayCalls} calls`)}    ${chalk.bold('Month')}  ${chalk.yellowBright(mag(monthCost))}  ${chalk.dim(`${monthCalls} calls`)}`)
   lines.push('')
 
   return lines.join('\n')
